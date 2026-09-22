@@ -1,0 +1,74 @@
+name: WARP smoke test
+
+# 对比：裸 Azure 出口 vs Cloudflare WARP 出口
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: baseline (no WARP)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trace exit IP
+        run: |
+          echo "=== cloudflare cdn-cgi/trace ==="
+          curl -fsS --connect-timeout 10 --max-time 20 https://www.cloudflare.com/cdn-cgi/trace || true
+          echo
+          echo "=== api.ipify.org ==="
+          curl -fsS --connect-timeout 10 --max-time 20 https://api.ipify.org || true
+          echo
+
+      - name: Probe cls.cn VIP
+        run: |
+          TS=$(date +%s)
+          URL="https://www.cls.cn/featured/v2/home/recommend/article?last_time=${TS}&refresh_Type=1"
+          echo "GET $URL"
+          curl -sS -o /tmp/vip.json -w "http=%{http_code} connect=%{time_connect}s ttfb=%{time_starttransfer}s total=%{time_total}s remote_ip=%{remote_ip}\n" \
+            --connect-timeout 20 --max-time 40 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+            -H "Referer: https://www.cls.cn/" \
+            -H "Accept: application/json, text/plain, */*" \
+            "$URL" || echo "curl_exit=$?"
+          head -c 200 /tmp/vip.json 2>/dev/null || true
+          echo
+
+  warp:
+    name: with WARP (client / ipv4)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Cloudflare WARP
+        uses: fscarmen/warp-on-actions@v1.4
+        with:
+          stack: ipv4
+          mode: client
+
+      - name: Trace exit IP (after WARP)
+        run: |
+          echo "=== warp-cli status ==="
+          sudo warp-cli --accept-tos status || true
+          echo
+          echo "=== cloudflare cdn-cgi/trace ==="
+          curl -fsS --connect-timeout 10 --max-time 20 https://www.cloudflare.com/cdn-cgi/trace || true
+          echo
+          echo "=== api.ipify.org ==="
+          curl -fsS --connect-timeout 10 --max-time 20 https://api.ipify.org || true
+          echo
+
+      - name: Probe cls.cn VIP (after WARP)
+        run: |
+          TS=$(date +%s)
+          URL="https://www.cls.cn/featured/v2/home/recommend/article?last_time=${TS}&refresh_Type=1"
+          echo "GET $URL"
+          curl -sS -o /tmp/vip.json -w "http=%{http_code} connect=%{time_connect}s ttfb=%{time_starttransfer}s total=%{time_total}s remote_ip=%{remote_ip}\n" \
+            --connect-timeout 20 --max-time 40 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+            -H "Referer: https://www.cls.cn/" \
+            -H "Accept: application/json, text/plain, */*" \
+            "$URL" || echo "curl_exit=$?"
+          head -c 200 /tmp/vip.json 2>/dev/null || true
+          echo
