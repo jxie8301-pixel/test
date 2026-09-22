@@ -1,0 +1,195 @@
+name: WARP shard scan smoke
+
+# 对比：Matrix 分片扫描（小股票池）± Cloudflare WARP
+# 复用公开仓 jxie8301-pixel/news-crawler 的 scan CLI（带签名）
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/warp-shard-scan.yml'
+      - 'fixtures/**'
+
+permissions:
+  contents: read
+
+env:
+  SHARDS: '5'
+  NODE_VERSION: '24'
+
+jobs:
+  scan-baseline:
+    name: baseline shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/checkout@v5
+        with:
+          repository: jxie8301-pixel/news-crawler
+          path: news-crawler
+          ref: main
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Prepare config + smoke pool
+        run: |
+          mkdir -p news-crawler/data/pools news-crawler/out
+          cp fixtures/config.scan.json news-crawler/config.json
+          cp fixtures/pool-smoke.json news-crawler/data/pools/all-a.json
+          echo "pool stocks=$(node -e "console.log(require('./news-crawler/data/pools/all-a.json').stocks.length)")"
+
+      - name: Trace exit IP
+        run: |
+          curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/cdn-cgi/trace | tee /tmp/trace.txt || true
+          echo "ipify=$(curl -fsS --connect-timeout 10 --max-time 15 https://api.ipify.org || true)"
+
+      - name: Scan shard
+        id: scan
+        working-directory: news-crawler
+        run: |
+          set +e
+          START=$(date +%s)
+          node src/cli.js scan --shard "${{ matrix.shard }}" --shards "$SHARDS"
+          code=$?
+          END=$(date +%s)
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "elapsed_sec=$((END-START))" >> "$GITHUB_OUTPUT"
+          echo "scan_exit=$code elapsed=$((END-START))s"
+          exit 0
+
+      - name: Summarize shard JSON
+        if: always()
+        working-directory: news-crawler
+        run: |
+          F="out/shard-${{ matrix.shard }}-of-${SHARDS}.json"
+          node -e '
+            const fs=require("fs");
+            const f=process.env.F;
+            if(!fs.existsSync(f)){ console.log("missing", f); process.exit(0); }
+            const j=JSON.parse(fs.readFileSync(f,"utf8"));
+            const st=j.stats||{};
+            const kinds=st.errorKinds||{};
+            console.log(JSON.stringify({
+              mode: "baseline",
+              shard: process.env.SHARD,
+              aborted: j.aborted||null,
+              stocks: st.stocks,
+              scanned: st.scanned,
+              listed: st.listed,
+              matched: st.matched,
+              errors: st.errors,
+              errorKinds: kinds,
+              articles: j.articles ? Object.keys(j.articles).length : (j.store && j.store.articles ? Object.keys(j.store.articles).length : null),
+              elapsed_sec: process.env.ELAPSED
+            }, null, 2));
+          '
+        env:
+          F: out/shard-${{ matrix.shard }}-of-${{ env.SHARDS }}.json
+          SHARD: ${{ matrix.shard }}
+          ELAPSED: ${{ steps.scan.outputs.elapsed_sec }}
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: baseline-shard-${{ matrix.shard }}
+          path: |
+            news-crawler/out/shard-*-of-*.json
+          if-no-files-found: ignore
+
+  scan-warp:
+    name: WARP shard ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Cloudflare WARP
+        uses: fscarmen/warp-on-actions@v1.4
+        with:
+          stack: ipv4
+          mode: client
+
+      - uses: actions/checkout@v5
+        with:
+          repository: jxie8301-pixel/news-crawler
+          path: news-crawler
+          ref: main
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Prepare config + smoke pool
+        run: |
+          mkdir -p news-crawler/data/pools news-crawler/out
+          cp fixtures/config.scan.json news-crawler/config.json
+          cp fixtures/pool-smoke.json news-crawler/data/pools/all-a.json
+
+      - name: Trace exit IP (WARP)
+        run: |
+          sudo warp-cli --accept-tos status || true
+          curl -fsS --connect-timeout 10 --max-time 15 https://www.cloudflare.com/cdn-cgi/trace | tee /tmp/trace.txt || true
+          echo "ipify=$(curl -fsS --connect-timeout 10 --max-time 15 https://api.ipify.org || true)"
+          grep -E '^(ip|warp|loc)=' /tmp/trace.txt || true
+
+      - name: Scan shard
+        id: scan
+        working-directory: news-crawler
+        run: |
+          set +e
+          START=$(date +%s)
+          node src/cli.js scan --shard "${{ matrix.shard }}" --shards "$SHARDS"
+          code=$?
+          END=$(date +%s)
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "elapsed_sec=$((END-START))" >> "$GITHUB_OUTPUT"
+          echo "scan_exit=$code elapsed=$((END-START))s"
+          exit 0
+
+      - name: Summarize shard JSON
+        if: always()
+        working-directory: news-crawler
+        run: |
+          F="out/shard-${{ matrix.shard }}-of-${SHARDS}.json"
+          node -e '
+            const fs=require("fs");
+            const f=process.env.F;
+            if(!fs.existsSync(f)){ console.log("missing", f); process.exit(0); }
+            const j=JSON.parse(fs.readFileSync(f,"utf8"));
+            const st=j.stats||{};
+            const kinds=st.errorKinds||{};
+            console.log(JSON.stringify({
+              mode: "warp",
+              shard: process.env.SHARD,
+              aborted: j.aborted||null,
+              stocks: st.stocks,
+              scanned: st.scanned,
+              listed: st.listed,
+              matched: st.matched,
+              errors: st.errors,
+              errorKinds: kinds,
+              articles: j.articles ? Object.keys(j.articles).length : (j.store && j.store.articles ? Object.keys(j.store.articles).length : null),
+              elapsed_sec: process.env.ELAPSED
+            }, null, 2));
+          '
+        env:
+          F: out/shard-${{ matrix.shard }}-of-${{ env.SHARDS }}.json
+          SHARD: ${{ matrix.shard }}
+          ELAPSED: ${{ steps.scan.outputs.elapsed_sec }}
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: warp-shard-${{ matrix.shard }}
+          path: |
+            news-crawler/out/shard-*-of-*.json
+          if-no-files-found: ignore

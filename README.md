@@ -31,6 +31,13 @@ Action: `fscarmen/warp-on-actions@v1.4`，`mode: client`，`stack: ipv4`
 - Pin action 到 commit SHA；先在本仓复测再改 `news-crawler`。
 - 评估：安装耗时、失败重试、Cloudflare/GitHub ToS、第三方 action 供应链。
 
-## 本仓 workflow
+## 分片扫描对比（WARP vs baseline）
 
-`.github/workflows/warp-smoke.yml` — `workflow_dispatch` / push `main` 触发，并行 baseline vs WARP。
+Workflow: `.github/workflows/warp-shard-scan.yml`
+
+- 复用公开仓 `jxie8301-pixel/news-crawler` 的 `node src/cli.js scan`
+- 小股票池：`fixtures/pool-smoke.json`（约 100 只），5 分片
+- 两组 Matrix：`scan-baseline` / `scan-warp`（每片先打 WARP）
+- 日志里看每片 `errors` / `errorKinds` / `elapsed_sec`；artifact 为 `*-shard-N.json`
+
+**生产 `news-crawler` 仍不上 WARP。**
