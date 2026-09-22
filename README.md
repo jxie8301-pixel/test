@@ -1,10 +1,36 @@
-# WARP on GitHub Actions — smoke test
+# WARP on GitHub Actions — 研究备忘
 
-对比 **无 WARP** vs **有 WARP** 时的出口 IP，以及对 `www.cls.cn` VIP 接口的连通性。
+**现状：不上 `news-crawler` 生产。** 本仓仅保留冒烟与结论，供以后（尤其 **Matrix 分片扫描**）评估。
 
-Workflow: `.github/workflows/warp-smoke.yml`（`workflow_dispatch` + push 触发）
+## 为何值得留着
 
-看 Actions 日志里的：
+- VIP 门控已可用 **CF Worker 代拉**（`jxie.ccwu.cc/vip`），不必靠 WARP。
+- **分片 job** 仍大量直连 `www.cls.cn`（`/es/quotes/articles` 等）。若 Azure 出口间歇 `ETIMEDOUT`，WARP 换出口可能有用；每个 shard job 都要各自 Setup WARP。
 
-- `cdn-cgi/trace` 的 `ip=` / `warp=` / `loc=`
-- `cls.cn` VIP：`http_code` + `time_connect` / `time_total`
+## 冒烟结果（2026-09-22）
+
+Run: https://github.com/jxie8301-pixel/test/actions/runs/35724856103  
+Action: `fscarmen/warp-on-actions@v1.4`，`mode: client`，`stack: ipv4`
+
+| | baseline（无 WARP） | with WARP |
+|--|---------------------|-----------|
+| 出口 IP | `20.98.18.68`（Azure） | `104.28.227.110`（CF） |
+| `warp=` | `off` | `on` |
+| `cls.cn` VIP 连通 | `http=200`，connect≈0.67s | `http=200`，connect≈0.46s |
+| VIP 业务体 | `errno=10012` 签名错误（裸 curl 无 sign，预期内） | 同左 |
+
+结论：
+
+1. WARP **能**把 GHA 出口从 Azure 换成 Cloudflare，且 `warp-cli` Connected。
+2. **该次** Azure 也能通 `cls.cn`，看不出 WARP 对 VIP 的额外收益；线上超时是间歇性的，需多次/故障窗口再测。
+3. 出口换 CF ≠ 国内 IP；`loc` 仍可能是 US。
+
+## 以后若上分片
+
+- 只给 **scan shard** job 加 WARP（gate / merge 可不加，或 gate 继续走 CF `/vip`）。
+- Pin action 到 commit SHA；先在本仓复测再改 `news-crawler`。
+- 评估：安装耗时、失败重试、Cloudflare/GitHub ToS、第三方 action 供应链。
+
+## 本仓 workflow
+
+`.github/workflows/warp-smoke.yml` — `workflow_dispatch` / push `main` 触发，并行 baseline vs WARP。
